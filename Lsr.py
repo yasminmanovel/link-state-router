@@ -25,11 +25,6 @@ def parse_config(config_file, my_node, graph):
         # graph.append(neighbour)
         pos += 1
 
-# def return_node(name, graph):
-#     for i in graph:
-#         if name == graph[i].name:
-#             return graph[i]
-#     # look through list of nodes and return the node that matches the input name
 
 # thread a = receives packets
 class Receive(threading.Thread):
