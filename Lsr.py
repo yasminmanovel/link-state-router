@@ -3,15 +3,17 @@ import os, sys, threading, time
 from socket import *
 
 class Node():
-    def __init__(self, router, port, edges, status):
+    def __init__(self, router, port, edges, status, time):
         self.name = router
         self.port = port
         self.num_neighbours = 0
         self.neighbours = edges # dictionary
         self.status = status
-        self.time = time.time()
+        self.time = time
 
 UPDATE_INTERVAL = 1
+ROUTE_UPDATE_INTERVAL = 15
+DEAD_NODE_INTERVAL = 10
 
 def parse_config(config_file, my_node, graph):
     file = open(config_file)
@@ -25,9 +27,55 @@ def parse_config(config_file, my_node, graph):
         pos += 1
 
 
-def add_new_node(packet):
-    pass
+def add_new_node(link_state):
+    packet = link_state.splitlines()
+    new_node = Node(str(packet[0]), int(packet[1]), {}, True, time.time())
+    pos = 4
+    new_node.num_neighbours = int(packet[3])
+    while (pos < (4 + new_node.num_neighbours)):
+        line = packet[pos].split()
+        new_node.neighbours.update({line[0] : float(line[1])})
+        pos += 1 
+    graph.update({new_node.name : new_node})
 
+
+def find_dead_nodes(graph):
+    for node in graph.values():
+        if node.name == my_node.name: continue
+        if DEAD_NODE_INTERVAL < (time.time() - float(node.time)):
+            node.status = False
+        else:
+            node.status = True
+
+# finds the shortest path from one node to another and returns that path
+# code based on the psuedocode of Djikstra's algorithm as specified in : https://en.wikipedia.org/wiki/Dijkstra%27s_algorithm
+# Since I am using dictionaries, changes have been made in the implementation
+def djikstra(end):
+    vertex_set = set(); dist = {}; prev = {}
+    for v in graph.values():
+        if v.status == False: continue
+        dist.update({v.name : float("inf")})
+        prev.update({v.name: '-'})
+        vertex_set.add(v.name)
+    dist[my_node.name] = 0.0
+    while vertex_set != []:
+        u = min(dist, key = dist.get)
+        if u == end: break
+        vertex_set.remove(u)
+        for v in graph[u].neighbours:
+            if v.status == False: continue
+            if v not in vertex_set: continue
+            alt = dist[u] + graph[u].neighbours[v]
+            if alt < dist[v]:
+                dist[v] = alt
+                prev[v] = u
+    path = ""
+    if prev[u] != '-' or u == my_node.name:
+        while u != '-':
+            path = u + path
+            u = prev[u]
+    return (path, dist[end])
+        
 # thread a = receives packets
 class Receive(threading.Thread):
     def __init__(self, name):
@@ -38,10 +86,10 @@ class Receive(threading.Thread):
         while not self.end:
             server_socket = socket(AF_INET, SOCK_DGRAM)
             server_socket.bind(("127.0.0.1", port))
-            print("Received:")
-            print(server_socket.recv(2000))
-        # receive data
-        # put it in (received = {})
+            # receive data
+            link_packet = server_socket.recv(2000).decode("utf-8")
+            # put it in (received = {})
+            received.update({link_packet[0] : link_packet})
         
 
 # thread b = determines if the received packets need to be sent, and then sends them if they do
@@ -52,17 +100,20 @@ class Restrict(threading.Thread):
         self.end = False
     def run(self):
         while not self.end:
-            for node in received:
+            # this copy avoids issues with 'dictionary changed size during iteration'
+            received_copy = received.copy()
+            for node in received_copy:
                 if node == my_node.name: continue
-                if received.get(node) == restricted.get(node) and restricted.get(node) != None: continue
+                if received_copy.get(node) == restricted.get(node) and restricted.get(node) != None: continue
                 # add it to the graph if new/update data
-                if (received.get(node.name)) == None:
-                        add_new_node(received[node])
+                if (restricted.get(node)) == None:
+                        add_new_node(received_copy[node])
                 else:
-                    restricted[node.name] = received[node.name]
                     # update time and status a packet has been received from that node - for node failures
-                    graph[node].time = time.time()
+                    packet = restricted[node].splitlines()
+                    graph[node].time = packet[2]
                 # send packet
+                restricted[node] = received_copy[node]
                 for n_port in neighbours_ports.values():
                     neighbours_socket = socket(AF_INET, SOCK_DGRAM)
                     neighbours_socket.connect(("127.0.0.1", n_port))
@@ -79,15 +130,13 @@ class Send(threading.Thread):
     def run(self):
         while not self.end:
             # send packet
-            link_state_packet = my_node.name + "\n" + config_txt + str(time.time())
+            link_state_packet = my_node.name + "\n" + str(port) + "\n" + str(time.time()) + "\n" + config_txt
             for n_port in neighbours_ports.values():
                 neighbours_socket = socket(AF_INET, SOCK_DGRAM)
                 neighbours_socket.connect(("127.0.0.1", n_port))
-                print("Sent:\n" + link_state_packet)
                 neighbours_socket.send(link_state_packet.encode())   
                 neighbours_socket.close()             
-        
-                time.sleep(1)
+                time.sleep(UPDATE_INTERVAL)
 
 
 # thread d = dijkstra's algorithm
@@ -98,54 +147,19 @@ class Djikstra(threading.Thread):
         self.end = False
     def run(self):
         while not self.end:
-            time.sleep(30)
-            # create adjacency matrix based on nodes that haven't failed
+            time.sleep(ROUTE_UPDATE_INTERVAL)
             # create vertex set
-            Q = {}; dist = {}; prev = []
-            # for each vertex in matrix
-            i = 0
-            for v in graph.values():
-                # dist[v] = infinity
-                dist.update({v.name : float("inf")})
-                Q.update({v.name : v.name})
-                # prev[v] = undefined
-                prev[i] = '0'
-            # dist[source] = 0
-            dist[my_node.name] = 0.0
-            # while Q is not empty:
-            while Q != {}:
-                # u = vertex in Q with min dist[u]
-                u = min(dist, key=dist.get)
-                # remove u from Q
-                Q.pop(u)
-                # for each neighbour v of u:
-                for v in graph:
-                    # alt = dist[u] + length(u, v)
-                    alt = dist[u] + graph[u].neighbours[v]
-                    # if alt < dist[v]:
-                    if alt < dist[u]:
-                        # dist[v] = alt
-                        dist[v] = alt
-                        # prev[v] = u
-                        prev[v] = u
-            # text = str of what im going to print
+            # Q = {}; dist = {}; prev = ['0' * len(graph)]
+            # find dead nodes and set their 'status' field to false if its been more than 10 seconds since we havent received a packet
+            find_dead_nodes(graph)
             text = "I am Router " + my_node.name + "\n"
             # for each node:
-            for v in graph:
-                # S = empty sequence
-                S = []
-                # u = target
-                # if prev[u] is defined or u = source:
-                    # while u is defined:
-                        # insert u at the beginning of S
-                        # u = prev[u]
-                # create line to print
-                text += "Least cost path to router " + v.name + ": " + S + " and the cost is " + dist[v.name] + "\n"
+            for v in graph.values():
+                if v.name == my_node.name or v.status == False: continue
+                result = djikstra(v)
+                text += "Least cost path to router " + v.name + ": " + result[0] + " and the cost is " + str(result[1]) + "\n"
             print(text)
                 
-
-
-
 
 
 graph = {}; received = {}; restricted = {}; neighbours_ports = {}; config_txt = ""
@@ -153,35 +167,41 @@ router_id = str(sys.argv[1])
 port = int(sys.argv[2])
 config_file = str(sys.argv[3])
 file = open(config_file)
+
 text = file.readlines()
 for line in text:
     config_txt = config_txt + line
-my_node = Node(router_id, port, {}, True)
+
+my_node = Node(router_id, port, {}, True, time.time())
 graph.update({my_node.name : my_node})
 parse_config(config_file, my_node, graph)
-# for i in graph:
-#     print(i.__dict__)
-# need to initialise dicts to 10 empty elements
+
 
 # create threads
 threads = []
 receive_packets = Receive("Thread-1")
-threads.append(receive_packets)
-# restrict_transmission = Restrict("Thread-2")
-send_my_packets = Send("Thread-3")
-threads.append(send_my_packets)
-# djikstras_algo = Djikstra("Thread-4")
-# have a new thread for constantly checking time and determining node failure
-
-# run threads 
 receive_packets.start()
-# restrict_transmission.start()
+threads.append(receive_packets)
+
+restrict_transmission = Restrict("Thread-2")
+restrict_transmission.start()
+threads.append(restrict_transmission)
+
+send_my_packets = Send("Thread-3")
 send_my_packets.start()
-# djikstras_algo.start()
+threads.append(send_my_packets)
+
+djikstras_algo = Djikstra("Thread-4")
+djikstras_algo.start()
+threads.append(djikstras_algo)
+
+
+
+# Method for ending threads borrowed from https://jaytaylor.com/blog/2011/01/28/how-to-have-threads-exit-with-ctrl-c-in-python/ by Jay Taylor
 while len(threads) > 0:
     try:
         threads = [t.join(1) for t in threads if t is not None and t.isAlive()]
     except KeyboardInterrupt:
-        print("Ctrl-C received")
         for t in threads:
             t.end = True
+        exit()
