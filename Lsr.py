@@ -1,6 +1,7 @@
 # Python 3
 import os, sys, threading, time
 from socket import *
+from decimal import Decimal
 
 class Node():
     def __init__(self, router, port, edges, status, time):
@@ -47,6 +48,16 @@ def find_dead_nodes(graph):
         else:
             node.status = True
 
+
+def min_dist(vertex_set, dist):
+    minimum_dist = float("inf")
+    min_vertex = '-'
+    for v in vertex_set:
+        if dist[v] <= minimum_dist:
+            min_vertex = v
+            minimum_dist = dist[v]
+    return min_vertex
+
 # finds the shortest path from one node to another and returns that path
 # code based on the psuedocode of Djikstra's algorithm as specified in : https://en.wikipedia.org/wiki/Dijkstra%27s_algorithm
 # Since I am using dictionaries, changes have been made in the implementation
@@ -58,12 +69,13 @@ def djikstra(end):
         prev.update({v.name: '-'})
         vertex_set.add(v.name)
     dist[my_node.name] = 0.0
-    while vertex_set != []:
-        u = min(dist, key = dist.get)
-        if u == end: break
-        vertex_set.remove(u)
+    while vertex_set != set():
+        # get minimum distance
+        u = min_dist(vertex_set, dist)
+        if u == end.name: break
+        vertex_set.discard(u)
         for v in graph[u].neighbours:
-            if v.status == False: continue
+            if graph[v].status == False: continue
             if v not in vertex_set: continue
             alt = dist[u] + graph[u].neighbours[v]
             if alt < dist[v]:
@@ -74,7 +86,9 @@ def djikstra(end):
         while u != '-':
             path = u + path
             u = prev[u]
-    return (path, dist[end])
+    cost = Decimal(dist[end.name])
+    rounded_cost = round(cost,1)
+    return (path, rounded_cost)
         
 # thread a = receives packets
 class Receive(threading.Thread):
